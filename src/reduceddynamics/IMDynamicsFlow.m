@@ -114,53 +114,95 @@ options = setfield(options,'L2',L2);
 
 % Construct phi and ridge regression
 [phi,Expmat] = multivariatePolynomial(k,1,options.R_PolyOrd);
-if isempty(options.R_coeff) == 1
+
+if strcmp(options.regression_type, 'rational')
     if options.fig_disp_nfp ~= -1
-        disp('Estimation of the reduced dynamics... ')
+        disp('Estimation of the reduced dynamics using rational regression... ')
     end
-    [W_r,l_opt,Err] = ridgeRegression(phi(X),dXdt,options.L2,...
-        options.idx_folds,options.l_vals);
-else
-    W_r_known = options.R_coeff;
-    nCoefs = size(W_r_known,2);
-    if nCoefs == size(Expmat,1)
-        W_r =  options.R_coeff; l_opt = 0; Err = 0;
-    else
-        Xtransformed = phi(X);
-        Xreg = Xtransformed(nCoefs+1:end,:);
-        Yreg = dXdt-W_r_known*Xtransformed(1:nCoefs,:);
-        [W_r_unknown,l_opt,Err] = ridgeRegression(Xreg,Yreg,...
-            options.L2,options.idx_folds,options.l_vals);
-        W_r = [W_r_known W_r_unknown];
+
+    % Step 1: Linear unconstrained optimization
+    if options.fig_disp_nfp ~= -1
+        disp('Step 1: Linear unconstrained optimization...');
     end
-end
-R = @(x) W_r*phi(x);
-R_info = assembleStruct(@(x) W_r*phi(x),W_r,phi,Expmat,l_opt,Err);
-options.l = l_opt;
-if options.fig_disp_nfp ~= -1
-    fprintf('\b Done. \n')
-end
-[V,D,d] = eigSorted(W_r(:,1:k));
-% Find the change of coordinates desired
-switch options.style
+    % Transpose dXdt for each component
+    for i = 1:size(dXdt,1)
+        coeffs_unconstrained{i} = rational_approximant(X, dXdt(i,:), options.R_PolyOrd, options.R_DenomOrd, ...
+            'loss_type', 'linear', 'constrained', false);
+
+        coeffs_constrained{i} = rational_approximant(X, dXdt(i,:), options.R_PolyOrd, options.R_DenomOrd, ...
+            'loss_type', 'linear', 'constrained', true, ...
+            'init_coeffs', coeffs_unconstrained{i}, ...
+            'delta', options.R_DenomDelta);
+
+        coeffs_rational{i} = rational_approximant(X, dXdt(i,:), options.R_PolyOrd, options.R_DenomOrd, ...
+            'loss_type', 'nonlinear', 'constrained', true, ...
+            'init_coeffs', coeffs_constrained{i}, ...
+            'delta', options.R_DenomDelta);
+    end
+
+    % Get dimensions and unpack coefficients
+    [XX_p, XX_q] = generate_features(X, options.R_PolyOrd, options.R_DenomOrd, true);
+    num_unknowns_num = size(XX_p,2);
+    num_unknowns_den = size(XX_q,2);
     
-    case 'modal'
-        % Linear transformation
-        iT = @(x) V\x; T = @(y) V*y;
-        T_info = assembleStruct(T,V,@(x) x,eye(k));
-        iT_info = assembleStruct(iT,inv(V),@(y) y,eye(k));
-        % Nonlinear modal dynamics coefficients
-        V_M = multivariatePolynomialLinTransf(V,k,options.R_PolyOrd);
-        W_n = V\W_r*V_M; N = @(y) V\(W_r*phi(V*y));
-        N_info = assembleStruct(N,W_n,phi,Expmat);
-        iT_info.lintransf = inv(V); T_info.lintransf = V;
-    case 'normalform'
+    % Handle each component separately
+    for i = 1:size(dXdt,1)
+        [a_rational{i}, b_rational{i}] = unpack_coeffs(coeffs_rational{i}, ...
+            num_unknowns_num, num_unknowns_den, 1);
+    end
+
+    % Create function handle that handles all components
+    R = @(x) reshape(cell2mat(cellfun(@(a,b) evaluate_rational_model(x(:), a, b, ...
+        options.R_PolyOrd, options.R_DenomOrd), ...
+        a_rational, b_rational, 'UniformOutput', false)), [], 1);
+
+    % Store info
+    rational_coeffs = struct('numerator', {a_rational}, 'denominator', {b_rational});
+    R_info = assembleStruct(R, rational_coeffs, phi, Expmat);
+
+    % Identity maps for coordinate changes
+    T = @(x) x; iT=@(y) y; N =@(y) R(y);
+    T_info = assembleStruct(@(x) x,eye(k),@(x) x,eye(k));
+    iT_info = T_info; N_info = R_info;
+    d = []; V = [];
+
+    if options.fig_disp_nfp ~= -1
+        fprintf('\b Done. \n')
+    end
+
+elseif strcmp(options.regression_type, 'polynomial')
+
+    if isempty(options.R_coeff) == 1
         if options.fig_disp_nfp ~= -1
-            disp('Estimation of the reduced dynamics in normal form...')
+            disp('Estimation of the reduced dynamics... ')
         end
-        n_real_eig = sum(imag(d)==0);
-        if n_real_eig>0
-            disp('Normal form not available. Returning modal style.')
+        [W_r,l_opt,Err] = ridgeRegression(phi(X),dXdt,options.L2,...
+            options.idx_folds,options.l_vals);
+    else
+        W_r_known = options.R_coeff;
+        nCoefs = size(W_r_known,2);
+        if nCoefs == size(Expmat,1)
+            W_r =  options.R_coeff; l_opt = 0; Err = 0;
+        else
+            Xtransformed = phi(X);
+            Xreg = Xtransformed(nCoefs+1:end,:);
+            Yreg = dXdt-W_r_known*Xtransformed(1:nCoefs,:);
+            [W_r_unknown,l_opt,Err] = ridgeRegression(Xreg,Yreg,...
+                options.L2,options.idx_folds,options.l_vals);
+            W_r = [W_r_known W_r_unknown];
+        end
+    end
+    R = @(x) W_r*phi(x);
+    R_info = assembleStruct(@(x) W_r*phi(x),W_r,phi,Expmat,l_opt,Err);
+    options.l = l_opt;
+    if options.fig_disp_nfp ~= -1
+        fprintf('\b Done. \n')
+    end
+    [V,D,d] = eigSorted(W_r(:,1:k));
+    % Find the change of coordinates desired
+    switch options.style
+        
+        case 'modal'
             % Linear transformation
             iT = @(x) V\x; T = @(y) V*y;
             T_info = assembleStruct(T,V,@(x) x,eye(k));
@@ -169,93 +211,112 @@ switch options.style
             V_M = multivariatePolynomialLinTransf(V,k,options.R_PolyOrd);
             W_n = V\W_r*V_M; N = @(y) V\(W_r*phi(V*y));
             N_info = assembleStruct(N,W_n,phi,Expmat);
-        else
-            if options.rescale == 1
-                v_rescale = max(abs(V\X),[],2);
-                V = 2*V*diag(max(v_rescale(1:k/2))*ones(1,k));
-            end
-            if options.rescale == 2
-                v_rescale = max(abs(V\X),[],2);
-                V = 2*V*diag(v_rescale);
-            end
-            switch options.N_PolyOrd
-                case 1
-                    phi_lin = @(x) x(1);
-                    eye_red = eye(k); k_red = k/2; eye_red = eye_red(1:k_red,:); 
-                    dr = diag(D); 
-                    iT_info = struct('Map',@(x) V\x,'coeff',inv(V),'phi',phi_lin,'Exponents',...
-                        eye_red);
-                    T_info = struct('Map',@(z) real(V*z),'coeff',V,'phi',phi_lin,'Exponents',...
-                        eye_red);
-                    N_info = struct('Map',@(z) transformationComplexConj(D(1:k_red,:)*z),'coeff',dr(1:k_red),'phi',phi_lin,'Exponents',...
-                        eye_red);
-                    Maps = struct('iT',iT_info,'N',N_info,'T',T_info,'V',V);
-                case 2
-                    error('Normal form available with order > 2.')
-                otherwise
-                    % Initialize the normal form
-                    Maps_info_opt=initialize_nf_flow(V,D,d,W_r,etaData,options);
-                    % Get normal form mappings T, N and T^{-1}
-                    Maps = dynamicsCoordChangeNF(Maps_info_opt,options);
-            end
-            % Final output
-            T_info_opt = Maps.T; N_info_opt = Maps.N;
-            iT_info_opt = Maps.iT;
-            iT  = iT_info_opt.Map; N = N_info_opt.Map; T = T_info_opt.Map;
-            iT_info = assembleStruct(iT,iT_info_opt.coeff,...
-                iT_info_opt.phi,iT_info_opt.Exponents);
-            N_info = assembleStruct(N,N_info_opt.coeff,N_info_opt.phi,...
-                N_info_opt.Exponents);
-            T_info = assembleStruct(T,T_info_opt.coeff,T_info_opt.phi,...
-                T_info_opt.Exponents);
             iT_info.lintransf = inv(V); T_info.lintransf = V;
-            
-            % Display the obtained normal form
-            flag_long = 0;
-            if abs(options.fig_disp_nf)>0
-                [str_eqn,str_eqn_plot,flag_long] = dispNormalFormFigure(N_info_opt.coeff,...
-                    N_info_opt.Exponents,abs(options.fig_disp_nf));
-                N_info.LaTeXComplex = str_eqn;
-                if length(str_eqn_plot)>1 && options.fig_disp_nfp ~= 0
-                    figure;
-                    h = plot(0,0);
-                    set(gcf,'color','w');
-                    str_above = ['Using the notation $\bar{\,}$ for the complex conjugates, the identified normal form is'];
-                    annotation('textbox','FontSize',18,'Interpreter','latex','FaceAlpha','1','EdgeColor','w','Position',[0.01 0.1 0.99 0.9], 'String',str_above);
-                    annotation('textbox','FontSize',18,'Interpreter','latex','FaceAlpha','1','EdgeColor','w','Position',[0.02 0.12 0.98 0.76],'String',['$' str_eqn_plot '$']);
-                    delete(h);
-                    set(gca,'Visible','off')
-                end
+        case 'normalform'
+            if options.fig_disp_nfp ~= -1
+                disp('Estimation of the reduced dynamics in normal form...')
             end
-            if options.fig_disp_nfp > 0
-                if (options.fig_disp_nf<=0) || (flag_long==1)
-                    fprintf('\n')
-                    disp(['The data-driven normal form dynamics reads:'])
-                    fprintf('\n')
-                    table_nf = dispNormalForm(N_info_opt.coeff,...
-                        N_info_opt.Exponents);
-                    disp(table_nf)
-                    if k == 2
-                        disp(['Notation: z is a complex number; z` is the ' ...
-                            'complex conjugated of z; z^k is the k-th power of z.'])
-                    else
-                        disp(['Notation: each z_j is a complex number; z`_j is the '...
-                            'complex conjugated of z_j; z^k_j is the k-th power of z_j.'])
+            n_real_eig = sum(imag(d)==0);
+            if n_real_eig>0
+                disp('Normal form not available. Returning modal style.')
+                % Linear transformation
+                iT = @(x) V\x; T = @(y) V*y;
+                T_info = assembleStruct(T,V,@(x) x,eye(k));
+                iT_info = assembleStruct(iT,inv(V),@(y) y,eye(k));
+                % Nonlinear modal dynamics coefficients
+                V_M = multivariatePolynomialLinTransf(V,k,options.R_PolyOrd);
+                W_n = V\W_r*V_M; N = @(y) V\(W_r*phi(V*y));
+                N_info = assembleStruct(N,W_n,phi,Expmat);
+            else
+                if options.rescale == 1
+                    v_rescale = max(abs(V\X),[],2);
+                    V = 2*V*diag(max(v_rescale(1:k/2))*ones(1,k));
+                end
+                if options.rescale == 2
+                    v_rescale = max(abs(V\X),[],2);
+                    V = 2*V*diag(v_rescale);
+                end
+                switch options.N_PolyOrd
+                    case 1
+                        phi_lin = @(x) x(1);
+                        eye_red = eye(k); k_red = k/2; eye_red = eye_red(1:k_red,:); 
+                        dr = diag(D); 
+                        iT_info = struct('Map',@(x) V\x,'coeff',inv(V),'phi',phi_lin,'Exponents',...
+                            eye_red);
+                        T_info = struct('Map',@(z) real(V*z),'coeff',V,'phi',phi_lin,'Exponents',...
+                            eye_red);
+                        N_info = struct('Map',@(z) transformationComplexConj(D(1:k_red,:)*z),'coeff',dr(1:k_red),'phi',phi_lin,'Exponents',...
+                            eye_red);
+                        Maps = struct('iT',iT_info,'N',N_info,'T',T_info,'V',V);
+                    case 2
+                        error('Normal form available with order > 2.')
+                    otherwise
+                        % Initialize the normal form
+                        Maps_info_opt=initialize_nf_flow(V,D,d,W_r,etaData,options);
+                        % Get normal form mappings T, N and T^{-1}
+                        Maps = dynamicsCoordChangeNF(Maps_info_opt,options);
+                end
+                % Final output
+                T_info_opt = Maps.T; N_info_opt = Maps.N;
+                iT_info_opt = Maps.iT;
+                iT  = iT_info_opt.Map; N = N_info_opt.Map; T = T_info_opt.Map;
+                iT_info = assembleStruct(iT,iT_info_opt.coeff,...
+                    iT_info_opt.phi,iT_info_opt.Exponents);
+                N_info = assembleStruct(N,N_info_opt.coeff,N_info_opt.phi,...
+                    N_info_opt.Exponents);
+                T_info = assembleStruct(T,T_info_opt.coeff,T_info_opt.phi,...
+                    T_info_opt.Exponents);
+                iT_info.lintransf = inv(V); T_info.lintransf = V;
+                
+                % Display the obtained normal form
+                flag_long = 0;
+                if abs(options.fig_disp_nf)>0
+                    [str_eqn,str_eqn_plot,flag_long] = dispNormalFormFigure(N_info_opt.coeff,...
+                        N_info_opt.Exponents,abs(options.fig_disp_nf));
+                    N_info.LaTeXComplex = str_eqn;
+                    if length(str_eqn_plot)>1 && options.fig_disp_nfp ~= 0
+                        figure;
+                        h = plot(0,0);
+                        set(gcf,'color','w');
+                        str_above = ['Using the notation $\bar{\,}$ for the complex conjugates, the identified normal form is'];
+                        annotation('textbox','FontSize',18,'Interpreter','latex','FaceAlpha','1','EdgeColor','w','Position',[0.01 0.1 0.99 0.9], 'String',str_above);
+                        annotation('textbox','FontSize',18,'Interpreter','latex','FaceAlpha','1','EdgeColor','w','Position',[0.02 0.12 0.98 0.76],'String',['$' str_eqn_plot '$']);
+                        delete(h);
+                        set(gca,'Visible','off')
                     end
                 end
+                if options.fig_disp_nfp > 0
+                    if (options.fig_disp_nf<=0) || (flag_long==1)
+                        fprintf('\n')
+                        disp(['The data-driven normal form dynamics reads:'])
+                        fprintf('\n')
+                        table_nf = dispNormalForm(N_info_opt.coeff,...
+                            N_info_opt.Exponents);
+                        disp(table_nf)
+                        if k == 2
+                            disp(['Notation: z is a complex number; z` is the ' ...
+                                'complex conjugated of z; z^k is the k-th power of z.'])
+                        else
+                            disp(['Notation: each z_j is a complex number; z`_j is the '...
+                                'complex conjugated of z_j; z^k_j is the k-th power of z_j.'])
+                        end
+                    end
+                end
+                % Polar Normal Form
+                if abs(options.fig_disp_nfp) ~= 1
+                    N_info = polarNormalForm(N_info,1);
+                else
+                    N_info = polarNormalForm(N_info,0);
+                end
             end
-            % Polar Normal Form
-            if abs(options.fig_disp_nfp) ~= 1
-                N_info = polarNormalForm(N_info,1);
-            else
-                N_info = polarNormalForm(N_info,0);
-            end
-        end
-        
-    otherwise
-        T = @(x) x; iT=@(y) y; N =@(y) R(y);
-        T_info = assembleStruct(@(x) x,eye(k),@(x) x,eye(k));
-        iT_info = T_info; N_info = R_info;
+            
+        otherwise
+            T = @(x) x; iT=@(y) y; N =@(y) R(y);
+            T_info = assembleStruct(@(x) x,eye(k),@(x) x,eye(k));
+            iT_info = T_info; N_info = R_info;
+    end
+else
+    disp('Regression type must be polynomial or rational.')
 end
 RDInfo = struct('reducedDynamics',R_info,'inverseTransformation',...
     iT_info,'conjugateDynamics',N_info,'transformation',T_info,...
@@ -405,7 +466,10 @@ options = struct('Style','default','R_PolyOrd', 1,'iT_PolyOrd',1,...
     'OptimalityTolerance',10^(-8-floor(log10(Ndata))),...
     'MaxIter',1e3,...
     'MaxFunctionEvaluations',1e4,...
-    'SpecifyObjectiveGradient',true);
+    'SpecifyObjectiveGradient',true,...
+    'regression_type', 'polynomial',...  % 'polynomial' or 'rational'
+    'R_DenomOrd', 0,...                 % Order of denominator for rational fit
+    'R_DenomDelta', 0.1);              % Minimum denominator value
 % Default case
 if nargin_o == 2; options.R_PolyOrd = varargin_o{:};
     options.N_PolyOrd = varargin_o{:}; end
@@ -450,3 +514,279 @@ if nargin_o > 2
 end
 end
 
+function [XX_p, XX_q] = generate_features(X, order_num, order_denom, bias)
+    % Generate polynomial features for numerator and denominator
+    %
+    % Parameters:
+    % X : array, size (n_features, n_samples)
+    % order_num : integer, numerator polynomial order
+    % order_denom : integer, denominator polynomial order
+    % bias : logical, include bias term (default true)
+    
+    if nargin < 4
+        bias = true;
+    end
+    
+    % Generate features separately for numerator and denominator
+    if order_num > 0
+        XX_p = generate_polynomial_features(X', order_num, false);
+    else
+        XX_p = [];
+    end
+    
+    if order_denom > 0
+        XX_q = generate_polynomial_features(X', order_denom, bias);
+    else
+        XX_q = [];
+    end
+end
+
+function b = polynomial_approximant(X, y, order, bias)
+    % Fit a polynomial approximant to the data using least squares.
+    %
+    % Parameters:
+    % X : array, size (n_features, n_samples)
+    %     Input data
+    % y : array, size (n_samples,)
+    %     Target values
+    % order : integer
+    %     Order of the polynomial
+    % bias : logical (optional)
+    %     If true, include bias term. Default is true
+    %
+    % Returns:
+    % b : array, size (n_features,)
+    %     Coefficients of polynomial approximant
+    
+    if nargin < 4
+        bias = true;
+    end
+    
+    % Use generate_polynomial_features directly
+    XX_p = generate_polynomial_features(X', order, false);
+    b = pinv(XX_p) * y(:);  % Ensure y is a column vector
+end
+
+function err = linear_error_function_scalar(y, coeffs, XX_p, XX_q)
+    % Compute the linearized error function for a scalar output.
+    %
+    % Parameters:
+    % y : array, size (n_samples, n_outputs)
+    %     Target values
+    % coeffs : array
+    %     Coefficients vector [denominator; numerator]
+    % XX_p : array, size (n_samples, num_unknowns_numerator)
+    %     Polynomial features for numerator
+    % XX_q : array, size (n_samples, num_unknowns_denominator)
+    %     Polynomial features for denominator
+    %
+    % Returns:
+    % err : scalar
+    %     Error value |y*(b*x^n) - a*x^n|^2
+    
+    num_unknowns_numerator = size(XX_p, 2);
+    num_unknowns_denominator = size(XX_q, 2);
+    
+    b = coeffs(1:num_unknowns_denominator);
+    A = reshape(coeffs(num_unknowns_denominator+1:end), num_unknowns_numerator, []);
+    error = XX_p * A - reshape(XX_q * b, [], 1) .* y;
+    err = norm(error(:))^2;
+end
+
+function err = nonlinear_error_function_scalar(y, coeffs, XX_p, XX_q)
+    % Compute the full, nonlinear error function for a scalar output.
+    %
+    % Parameters:
+    % y : array, size (n_samples, n_outputs)
+    %     Target values
+    % coeffs : array
+    %     Coefficients vector [denominator; numerator]
+    % XX_p : array, size (n_samples, num_unknowns_numerator)
+    %     Polynomial features for numerator
+    % XX_q : array, size (n_samples, num_unknowns_denominator)
+    %     Polynomial features for denominator
+    %
+    % Returns:
+    % err : scalar
+    %     Error value |y - (a*x^n)/(b*x^n)|^2
+    
+    num_unknowns_numerator = size(XX_p, 2);
+    num_unknowns_denominator = size(XX_q, 2);
+    
+    % Extract coefficients
+    b = coeffs(1:num_unknowns_denominator);
+    A = reshape(coeffs(num_unknowns_denominator+1:end), num_unknowns_numerator, []);
+    error = (XX_p * A) ./ reshape(XX_q * b, [], 1) - y;
+    err = norm(error(:))^2;
+end
+
+function [A, b] = unpack_coeffs(coeffs, num_unknowns_numerator, num_unknowns_denominator, n_features)
+    % Unpack coefficients vector into numerator and denominator matrices
+    %
+    % Parameters:
+    % coeffs : array, size (num_unknowns_denominator + num_unknowns_numerator, 1)
+    %     Combined coefficient vector [denominator; numerator]
+    % num_unknowns_numerator : integer
+    %     Number of unknowns in numerator polynomial
+    % num_unknowns_denominator : integer
+    %     Number of unknowns in denominator polynomial
+    % n_features : integer
+    %     Number of output features
+    
+    % Extract denominator coefficients
+    b = coeffs(1:num_unknowns_denominator);
+    
+    % Extract and reshape numerator coefficients
+    num_coeffs = coeffs(num_unknowns_denominator+1:end);
+    A = reshape(num_coeffs, [], n_features);  % Let MATLAB calculate first dimension
+end
+
+function coeffs = rational_approximant(X, y, order_num, order_denom, varargin)
+    % Computes a rational approximant using least squares minimization.
+    %
+    % Parameters:
+    % X : array, size (n_features, n_samples)
+    %     Input data
+    % y : array, size (n_samples,)
+    %     Target values
+    % order_num : integer
+    %     Order of numerator polynomial
+    % order_denom : integer
+    %     Order of denominator polynomial
+    %
+    % Optional Parameters (Name-Value Pairs):
+    % 'loss_type' : string, 'linear' (default) or 'nonlinear'
+    % 'init_coeffs' : initial coefficient vector
+    % 'constrained' : logical, default true
+    % 'delta' : positive scalar, default 0.5
+    %
+    % Returns:
+    % coeffs : vector containing [denominator; numerator] coefficients
+    
+    % Parse inputs
+    p = inputParser;
+    addParameter(p, 'loss_type', 'linear');
+    addParameter(p, 'init_coeffs', []);
+    addParameter(p, 'constrained', true);
+    addParameter(p, 'delta', 0.5);
+    parse(p, varargin{:});
+    
+    % Generate features with correct orders
+    [XX_p, XX_q] = generate_features(X, order_num, order_denom, true);
+    num_unknowns_num = size(XX_p,2);
+    num_unknowns_den = size(XX_q,2);
+    num_features = size(X,1);  % Changed: use input features dimension
+    
+    % Initialize coefficients matching Python version exactly
+    if isempty(p.Results.init_coeffs)
+        [XX_poly, ~] = generate_features(X, order_num, 0, false);
+        a_poly = pinv(XX_poly) * y(:);  % Changed: ensure y is column vector
+        b0 = zeros(num_unknowns_den,1);  % Changed: initialize with ones
+        % b0 = b0 / norm(b0);  % Changed: normalize like Python
+        init_coeffs = [b0; a_poly(:)];
+    else
+        init_coeffs = p.Results.init_coeffs;
+    end
+    
+    % Set up objective function with correct dimensions
+    if strcmp(p.Results.loss_type, 'nonlinear')
+        obj_fun = @(x) nonlinear_error_function_scalar(y(:), x, XX_p, XX_q);  % Changed: ensure y is column
+    else
+        obj_fun = @(x) linear_error_function_scalar(y(:), x, XX_p, XX_q);  % Changed: ensure y is column
+    end
+    
+    % Set up optimization
+    options = optimoptions('fmincon', ...
+        'Display', 'iter', ...
+        'MaxIterations', 1000, ...
+        'Algorithm', 'sqp',  ...
+        'OptimalityTolerance', 1e-6);
+    
+    if p.Results.constrained
+        % Match Python's constraint formulation
+        num_constr_points = size(XX_q,1);
+        Aineq = -XX_q;  % Negative because MATLAB uses ≤ while Python uses ≥
+        bineq = -p.Results.delta * ones(size(XX_q,1),1);
+        
+        % Add zeros for numerator coefficients to match dimensions
+        Aineq = [Aineq, zeros(num_constr_points, num_unknowns_num)];
+        
+        coeffs = fmincon(obj_fun, init_coeffs, Aineq, bineq, [], [], [], [], [], options);
+    else
+        coeffs = fminunc(obj_fun, init_coeffs, options);
+    end
+end
+
+function y = evaluate_rational_model(X, a, b, order_num, order_denom)
+    % Evaluate the rational model at the given input data.
+    %
+    % Parameters:
+    % X : array, size (n_features, n_samples)
+    %     Input data
+    % a : array, size (num_unknowns_numerator, n_features)
+    %     Coefficients of numerator polynomial
+    % b : array, size (num_unknowns_denominator, 1)
+    %     Coefficients of denominator polynomial
+    % order_num : integer
+    %     Order of numerator polynomial
+    % order_denom : integer
+    %     Order of denominator polynomial
+    %
+    % Returns:
+    % y : array, size (n_samples, n_features)
+    %     Evaluated rational model at input data
+    
+    [XX_p, XX_q] = generate_features(X, order_num, order_denom, true);
+    y = (XX_p * a) ./ reshape(XX_q * b, [], 1);  % Match Python reshaping
+end
+
+function XX = generate_polynomial_features(X, order, include_bias)
+    % Generate polynomial features up to specified order.
+    % Matches scikit-learn's PolynomialFeatures behavior
+    %
+    % Parameters:
+    % X : array, size (n_samples, n_features)
+    %     Input samples
+    % order : integer
+    %     Maximum polynomial order
+    % include_bias : logical
+    %     Whether to include a bias column (all ones)
+    %
+    % Returns:
+    % XX : array, size (n_samples, n_features_out)
+    %     Transformed input with polynomial features
+    
+    [n_samples, n_features] = size(X);
+    
+    % Get all combinations of features up to given order
+    combinations = {};
+    for deg = 0:order
+        combs = nchoosek(repmat(1:n_features, 1, deg), deg);
+        combinations{deg + 1} = unique(combs, 'rows');
+    end
+    
+    % If not including bias, remove the zero-degree term
+    if ~include_bias
+        combinations = combinations(2:end);
+    end
+    
+    % Calculate features
+    feature_list = [];
+    for i = 1:length(combinations)
+        combs = combinations{i};
+        for j = 1:size(combs, 1)
+            % Count occurrences of each feature
+            degrees = histcounts(combs(j,:), 0.5:n_features+0.5);
+            % Calculate feature
+            feat = ones(n_samples, 1);
+            for k = 1:n_features
+                if degrees(k) > 0
+                    feat = feat .* X(:,k).^degrees(k);
+                end
+            end
+            feature_list = [feature_list, feat];
+        end
+    end
+    
+    XX = feature_list;
+end

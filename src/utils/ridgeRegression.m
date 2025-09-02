@@ -7,6 +7,8 @@ function [H,l_opt,Err] = ridgeRegression(X,Y,L,idx_folds,l_vals)
 if Nfeatures > Ndata
     trans_option  = 1;
     X = transpose(X); Y = transpose(Y); L = transpose(L);
+else
+    trans_option  = 0;
 end
 [~,Nfeatures] = size(X);
 
