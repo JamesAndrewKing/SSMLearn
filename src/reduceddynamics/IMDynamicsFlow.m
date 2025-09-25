@@ -120,52 +120,45 @@ if strcmp(options.regression_type, 'rational')
         disp('Estimation of the reduced dynamics using rational regression... ')
     end
 
-    % Step 1: Linear unconstrained optimization
-    if options.fig_disp_nfp ~= -1
-        disp('Step 1: Linear unconstrained optimization...');
-    end
-    % Transpose dXdt for each component
-    for i = 1:size(dXdt,1)
-        coeffs_unconstrained{i} = rational_approximant(X, dXdt(i,:), options.R_PolyOrd, options.R_DenomOrd, ...
-            'loss_type', 'linear', 'constrained', false);
-
-        coeffs_constrained{i} = rational_approximant(X, dXdt(i,:), options.R_PolyOrd, options.R_DenomOrd, ...
-            'loss_type', 'linear', 'constrained', true, ...
-            'init_coeffs', coeffs_unconstrained{i}, ...
-            'delta', options.R_DenomDelta);
-
-        coeffs_rational{i} = rational_approximant(X, dXdt(i,:), options.R_PolyOrd, options.R_DenomOrd, ...
-            'loss_type', 'nonlinear', 'constrained', true, ...
-            'init_coeffs', coeffs_constrained{i}, ...
-            'delta', options.R_DenomDelta);
-    end
-
-    % Get dimensions and unpack coefficients
-    [XX_p, XX_q] = generate_features(X, options.R_PolyOrd, options.R_DenomOrd, true);
-    num_unknowns_num = size(XX_p,2);
-    num_unknowns_den = size(XX_q,2);
+    % Normalize:
+    max_abs_X = max(abs(X), [], 2);
+    X = X ./ max_abs_X;
+    dXdt = dXdt ./ max_abs_X;
     
-    % Handle each component separately
-    for i = 1:size(dXdt,1)
-        [a_rational{i}, b_rational{i}] = unpack_coeffs(coeffs_rational{i}, ...
-            num_unknowns_num, num_unknowns_den, 1);
-    end
-
-    % Create function handle that handles all components
-    R = @(x) reshape(cell2mat(cellfun(@(a,b) evaluate_rational_model(x(:), a, b, ...
-        options.R_PolyOrd, options.R_DenomOrd), ...
-        a_rational, b_rational, 'UniformOutput', false)), [], 1);
-
+    % Handle all dimensions at once - no loop needed
+    disp('Step 1: Linear unconstrained optimization...');
+    coeffs_unconstrained = rational_approximant(X, dXdt, options.R_PolyOrd, options.R_DenomOrd, ...
+        'loss_type', 'linear', 'constrained', false);
+    disp('Step 2: Linear constrained optimization...');
+    coeffs_constrained = rational_approximant(X, dXdt, options.R_PolyOrd, options.R_DenomOrd, ...
+        'loss_type', 'linear', 'constrained', true, ...
+        'init_coeffs', coeffs_unconstrained, ...
+        'delta', options.R_DenomDelta);
+    disp('Step 3: Nonlinear constrained optimization...');
+    coeffs_rational = rational_approximant(X, dXdt, options.R_PolyOrd, options.R_DenomOrd, ...
+        'loss_type', 'nonlinear', 'constrained', true, ...
+        'init_coeffs', coeffs_constrained, ...
+        'delta', options.R_DenomDelta);
+     
+    % Unpack coefficients once for all dimensions
+    [XX_p, XX_q] = generate_features(X, options.R_PolyOrd, options.R_DenomOrd, true);
+    [a_rational, b_rational] = unpack_coeffs(coeffs_rational, ...
+        size(XX_p,2), size(XX_q,2), size(dXdt,1));
+    
+    % Create unified evaluation function
+    R = @(x) evaluate_rational_model(x ./ max_abs_X, a_rational, b_rational, ...
+        options.R_PolyOrd, options.R_DenomOrd)' .* max_abs_X;
+    
     % Store info
-    rational_coeffs = struct('numerator', {a_rational}, 'denominator', {b_rational});
+    rational_coeffs = struct('numerator', a_rational, 'denominator', b_rational);
     R_info = assembleStruct(R, rational_coeffs, phi, Expmat);
-
-    % Identity maps for coordinate changes
+    
+    % Rest of the code remains the same
     T = @(x) x; iT=@(y) y; N =@(y) R(y);
     T_info = assembleStruct(@(x) x,eye(k),@(x) x,eye(k));
     iT_info = T_info; N_info = R_info;
     d = []; V = [];
-
+    
     if options.fig_disp_nfp ~= -1
         fprintf('\b Done. \n')
     end
@@ -468,8 +461,8 @@ options = struct('Style','default','R_PolyOrd', 1,'iT_PolyOrd',1,...
     'MaxFunctionEvaluations',1e4,...
     'SpecifyObjectiveGradient',true,...
     'regression_type', 'polynomial',...  % 'polynomial' or 'rational'
-    'R_DenomOrd', 0,...                 % Order of denominator for rational fit
-    'R_DenomDelta', 0.1);              % Minimum denominator value
+    'R_DenomOrd', 1,...                 % Order of denominator for rational fit
+    'R_DenomDelta', 0.5);              % Minimum denominator value
 % Default case
 if nargin_o == 2; options.R_PolyOrd = varargin_o{:};
     options.N_PolyOrd = varargin_o{:}; end
@@ -542,128 +535,81 @@ function [XX_p, XX_q] = generate_features(X, order_num, order_denom, bias)
 end
 
 function b = polynomial_approximant(X, y, order, bias)
-    % Fit a polynomial approximant to the data using least squares.
-    %
-    % Parameters:
-    % X : array, size (n_features, n_samples)
-    %     Input data
-    % y : array, size (n_samples,)
-    %     Target values
-    % order : integer
-    %     Order of the polynomial
-    % bias : logical (optional)
-    %     If true, include bias term. Default is true
-    %
-    % Returns:
-    % b : array, size (n_features,)
-    %     Coefficients of polynomial approximant
+    % Fit polynomial approximant using least squares
+    % X: (n_features, n_samples), y: (n_features, n_samples) or (n_samples,)
     
     if nargin < 4
         bias = true;
     end
     
-    % Use generate_polynomial_features directly
     XX_p = generate_polynomial_features(X', order, false);
-    b = pinv(XX_p) * y(:);  % Ensure y is a column vector
+    
+    % Ensure y is properly oriented and get coefficients
+    if isvector(y)
+        b = pinv(XX_p) * y(:);
+    else
+        b = zeros(size(XX_p,2), size(y,1));
+        for i = 1:size(y,1)
+            b(:,i) = pinv(XX_p) * y(i,:)';
+        end
+        b = b(:);
+    end
 end
 
 function err = linear_error_function_scalar(y, coeffs, XX_p, XX_q)
-    % Compute the linearized error function for a scalar output.
-    %
-    % Parameters:
-    % y : array, size (n_samples, n_outputs)
-    %     Target values
-    % coeffs : array
-    %     Coefficients vector [denominator; numerator]
-    % XX_p : array, size (n_samples, num_unknowns_numerator)
-    %     Polynomial features for numerator
-    % XX_q : array, size (n_samples, num_unknowns_denominator)
-    %     Polynomial features for denominator
-    %
-    % Returns:
-    % err : scalar
-    %     Error value |y*(b*x^n) - a*x^n|^2
+    % Compute linear error for rational approximation
+    % y: (n_features x n_samples) output matrix
     
-    num_unknowns_numerator = size(XX_p, 2);
-    num_unknowns_denominator = size(XX_q, 2);
+    num_features = size(y,1);
+    num_unknowns_den = size(XX_q,2);
     
-    b = coeffs(1:num_unknowns_denominator);
-    A = reshape(coeffs(num_unknowns_denominator+1:end), num_unknowns_numerator, []);
-    error = XX_p * A - reshape(XX_q * b, [], 1) .* y;
+    % Extract coefficients
+    b = coeffs(1:num_unknowns_den);
+    A = reshape(coeffs(num_unknowns_den+1:end), [], num_features);
+    
+    % Compute denominator term (n_samples x 1)
+    denom = XX_q * b;
+    
+    % Compute error (n_samples x n_features)
+    error = XX_p * A - denom .* y';
+    
     err = norm(error(:))^2;
 end
 
 function err = nonlinear_error_function_scalar(y, coeffs, XX_p, XX_q)
-    % Compute the full, nonlinear error function for a scalar output.
-    %
-    % Parameters:
-    % y : array, size (n_samples, n_outputs)
-    %     Target values
-    % coeffs : array
-    %     Coefficients vector [denominator; numerator]
-    % XX_p : array, size (n_samples, num_unknowns_numerator)
-    %     Polynomial features for numerator
-    % XX_q : array, size (n_samples, num_unknowns_denominator)
-    %     Polynomial features for denominator
-    %
-    % Returns:
-    % err : scalar
-    %     Error value |y - (a*x^n)/(b*x^n)|^2
+    % Compute nonlinear error for rational approximation
+    % y: (n_features x n_samples) output matrix
     
-    num_unknowns_numerator = size(XX_p, 2);
-    num_unknowns_denominator = size(XX_q, 2);
+    num_features = size(y,1);
+    num_unknowns_den = size(XX_q,2);
     
     % Extract coefficients
-    b = coeffs(1:num_unknowns_denominator);
-    A = reshape(coeffs(num_unknowns_denominator+1:end), num_unknowns_numerator, []);
-    error = (XX_p * A) ./ reshape(XX_q * b, [], 1) - y;
+    b = coeffs(1:num_unknowns_den);
+    A = reshape(coeffs(num_unknowns_den+1:end), [], num_features);
+    
+    % Compute denominator term (n_samples x 1)
+    denom = XX_q * b;
+    
+    % Compute error (n_samples x n_features)
+    error = (XX_p * A) ./ denom - y';
+    
     err = norm(error(:))^2;
 end
 
-function [A, b] = unpack_coeffs(coeffs, num_unknowns_numerator, num_unknowns_denominator, n_features)
-    % Unpack coefficients vector into numerator and denominator matrices
-    %
-    % Parameters:
-    % coeffs : array, size (num_unknowns_denominator + num_unknowns_numerator, 1)
-    %     Combined coefficient vector [denominator; numerator]
-    % num_unknowns_numerator : integer
-    %     Number of unknowns in numerator polynomial
-    % num_unknowns_denominator : integer
-    %     Number of unknowns in denominator polynomial
-    % n_features : integer
-    %     Number of output features
+function [A, b] = unpack_coeffs(coeffs, ~, num_unknowns_denominator, n_features)
+    % Unpack rational approximation coefficients
+    % coeffs: [denominator; numerator] coefficients
     
-    % Extract denominator coefficients
     b = coeffs(1:num_unknowns_denominator);
-    
-    % Extract and reshape numerator coefficients
-    num_coeffs = coeffs(num_unknowns_denominator+1:end);
-    A = reshape(num_coeffs, [], n_features);  % Let MATLAB calculate first dimension
+    A = reshape(coeffs(num_unknowns_denominator+1:end), [], n_features);
 end
 
 function coeffs = rational_approximant(X, y, order_num, order_denom, varargin)
-    % Computes a rational approximant using least squares minimization.
-    %
-    % Parameters:
-    % X : array, size (n_features, n_samples)
-    %     Input data
-    % y : array, size (n_samples,)
-    %     Target values
-    % order_num : integer
-    %     Order of numerator polynomial
-    % order_denom : integer
-    %     Order of denominator polynomial
-    %
-    % Optional Parameters (Name-Value Pairs):
-    % 'loss_type' : string, 'linear' (default) or 'nonlinear'
-    % 'init_coeffs' : initial coefficient vector
-    % 'constrained' : logical, default true
-    % 'delta' : positive scalar, default 0.5
-    %
-    % Returns:
-    % coeffs : vector containing [denominator; numerator] coefficients
+    % Compute rational approximation using constrained optimization
+    % X: (n_features x n_samples) input matrix
+    % y: (n_features x n_samples) output matrix
     
-    % Parse inputs
+    % Parse optimization parameters
     p = inputParser;
     addParameter(p, 'loss_type', 'linear');
     addParameter(p, 'init_coeffs', []);
@@ -671,122 +617,86 @@ function coeffs = rational_approximant(X, y, order_num, order_denom, varargin)
     addParameter(p, 'delta', 0.5);
     parse(p, varargin{:});
     
-    % Generate features with correct orders
+    % Generate features and get dimensions
     [XX_p, XX_q] = generate_features(X, order_num, order_denom, true);
     num_unknowns_num = size(XX_p,2);
     num_unknowns_den = size(XX_q,2);
-    num_features = size(X,1);  % Changed: use input features dimension
     
-    % Initialize coefficients matching Python version exactly
+    % Initialize coefficients
     if isempty(p.Results.init_coeffs)
-        [XX_poly, ~] = generate_features(X, order_num, 0, false);
-        a_poly = pinv(XX_poly) * y(:);  % Changed: ensure y is column vector
-        b0 = zeros(num_unknowns_den,1);  % Changed: initialize with ones
-        % b0 = b0 / norm(b0);  % Changed: normalize like Python
-        init_coeffs = [b0; a_poly(:)];
+        a_poly = polynomial_approximant(X, y, order_num);
+        init_coeffs = [zeros(num_unknowns_den,1); a_poly];
     else
         init_coeffs = p.Results.init_coeffs;
     end
     
-    % Set up objective function with correct dimensions
+    % Set up optimization
+    options = optimoptions('fmincon', 'Display', 'iter', 'MaxIterations', 1000, ...
+        'Algorithm', 'sqp', 'OptimalityTolerance', 1e-6);
+    
+    % Define objective function
     if strcmp(p.Results.loss_type, 'nonlinear')
-        obj_fun = @(x) nonlinear_error_function_scalar(y(:), x, XX_p, XX_q);  % Changed: ensure y is column
+        obj_fun = @(x) nonlinear_error_function_scalar(y, x, XX_p, XX_q);
     else
-        obj_fun = @(x) linear_error_function_scalar(y(:), x, XX_p, XX_q);  % Changed: ensure y is column
+        obj_fun = @(x) linear_error_function_scalar(y, x, XX_p, XX_q);
     end
     
-    % Set up optimization
-    options = optimoptions('fmincon', ...
-        'Display', 'iter', ...
-        'MaxIterations', 1000, ...
-        'Algorithm', 'sqp',  ...
-        'OptimalityTolerance', 1e-6);
-    
+    % Solve optimization problem
     if p.Results.constrained
-        % Match Python's constraint formulation
-        num_constr_points = size(XX_q,1);
-        Aineq = -XX_q;  % Negative because MATLAB uses ≤ while Python uses ≥
-        bineq = -p.Results.delta * ones(size(XX_q,1),1);
-        
-        % Add zeros for numerator coefficients to match dimensions
-        Aineq = [Aineq, zeros(num_constr_points, num_unknowns_num)];
-        
-        coeffs = fmincon(obj_fun, init_coeffs, Aineq, bineq, [], [], [], [], [], options);
+        constr_mtx = [XX_q, zeros(size(XX_q,1), num_unknowns_num * size(y,1))];
+        Aineq = -constr_mtx;
+        bineq = -p.Results.delta * ones(size(XX_q,1), 1);
+        coeffs = fmincon(obj_fun, init_coeffs, Aineq, bineq, [], [], ...
+            -inf(size(init_coeffs)), inf(size(init_coeffs)), [], options);
     else
-        coeffs = fminunc(obj_fun, init_coeffs, options);
+        options_unc = optimoptions('fminunc', 'Display', 'iter', ...
+            'MaxIterations', 1000, 'OptimalityTolerance', 1e-6);
+        coeffs = fminunc(obj_fun, init_coeffs, options_unc);
     end
 end
 
 function y = evaluate_rational_model(X, a, b, order_num, order_denom)
-    % Evaluate the rational model at the given input data.
-    %
-    % Parameters:
-    % X : array, size (n_features, n_samples)
-    %     Input data
-    % a : array, size (num_unknowns_numerator, n_features)
-    %     Coefficients of numerator polynomial
-    % b : array, size (num_unknowns_denominator, 1)
-    %     Coefficients of denominator polynomial
-    % order_num : integer
-    %     Order of numerator polynomial
-    % order_denom : integer
-    %     Order of denominator polynomial
-    %
-    % Returns:
-    % y : array, size (n_samples, n_features)
-    %     Evaluated rational model at input data
+    % Evaluate rational model: p(X)/q(X) where p,q are polynomials
+    % X: (n_features x n_samples) input matrix
+    % Returns column vector of evaluated values
     
     [XX_p, XX_q] = generate_features(X, order_num, order_denom, true);
-    y = (XX_p * a) ./ reshape(XX_q * b, [], 1);  % Match Python reshaping
+    y = (XX_p * a) ./ (XX_q * b);
+    % y = y(:);
 end
 
 function XX = generate_polynomial_features(X, order, include_bias)
-    % Generate polynomial features up to specified order.
-    % Matches scikit-learn's PolynomialFeatures behavior
-    %
-    % Parameters:
-    % X : array, size (n_samples, n_features)
-    %     Input samples
-    % order : integer
-    %     Maximum polynomial order
-    % include_bias : logical
-    %     Whether to include a bias column (all ones)
-    %
-    % Returns:
-    % XX : array, size (n_samples, n_features_out)
-    %     Transformed input with polynomial features
+    % Generate polynomial features up to given order
+    % X: (n_samples x n_features) input matrix
     
     [n_samples, n_features] = size(X);
     
-    % Get all combinations of features up to given order
-    combinations = {};
+    % Generate combinations for each degree
+    combinations = cell(order + 1, 1);
     for deg = 0:order
         combs = nchoosek(repmat(1:n_features, 1, deg), deg);
         combinations{deg + 1} = unique(combs, 'rows');
     end
     
-    % If not including bias, remove the zero-degree term
+    % Handle bias term
     if ~include_bias
-        combinations = combinations(2:end);
+        combinations(1) = [];
     end
     
-    % Calculate features
-    feature_list = [];
+    % Pre-allocate feature matrix
+    total_features = sum(cellfun(@(x) size(x,1), combinations));
+    XX = zeros(n_samples, total_features);
+    
+    % Fill feature matrix
+    feat_idx = 1;
     for i = 1:length(combinations)
         combs = combinations{i};
         for j = 1:size(combs, 1)
-            % Count occurrences of each feature
             degrees = histcounts(combs(j,:), 0.5:n_features+0.5);
-            % Calculate feature
             feat = ones(n_samples, 1);
-            for k = 1:n_features
-                if degrees(k) > 0
-                    feat = feat .* X(:,k).^degrees(k);
-                end
-            end
-            feature_list = [feature_list, feat];
+            feat = prod(X(:,degrees>0) .^ degrees(degrees>0), 2);
+            XX(:,feat_idx) = feat;
+            feat_idx = feat_idx + 1;
         end
     end
-    
-    XX = feature_list;
 end
