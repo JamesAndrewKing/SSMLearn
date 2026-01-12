@@ -1,0 +1,72 @@
+Last login: Sun Jan 11 18:05:36 on console
+cd%                                                                             giacomoabbasciano@MacBook-Pro-di-Giacomo ~ % cd
+giacomoabbasciano@MacBook-Pro-di-Giacomo ~ % ls
+Desktop				matlab_crash_dump.6692-1
+Documents			matlab_crash_dump.7320-1
+Downloads			miniconda3
+git				miniforge3
+java.log.12368			Movies
+jogl.ex.9506			Music
+Library				Pictures
+matlab_crash_dump.13523-1	Public
+matlab_crash_dump.18264-1
+giacomoabbasciano@MacBook-Pro-di-Giacomo ~ % cd Desktop 
+giacomoabbasciano@MacBook-Pro-di-Giacomo Desktop % ls
+~$ShilnikovBif.pptx
+1.pdf
+1500.pptx
+2_DelayEmbSpace_PlusReduction
+363411a0.pdf
+Anmeldeformular einreichen - Flatfox.pdf
+ConferenzaMarrakech
+CorrelationDimensionPapersAndCode
+DA LEGGERE-SPIEGA ROUTE TO CHAOS(MANDATO DA GABOR).pdf
+Doc via cairoli 5
+Giorni in Italia.xlsx
+ilugig\.pdf
+InvertedFlag.pdf
+JSV_Publication
+LyapunovExponentPapersAndCode
+OneDrive - ETH Zurich
+Optimal Control
+Paper_SSM_time_delay_V7-4.pdf
+ParametricSSM_TimeDelay
+Piazza 26 maggio
+ProvaUPO12gennaio
+RBFsEspDerivations.pdf
+Screenshot 2025-10-16 alle 15.50.16.png
+Scrivania - MacBook Pro di Giacomo
+TimeDelay_Furuta(CodePaper)ORIGINAl
+TO DO.png
+giacomoabbasciano@MacBook-Pro-di-Giacomo Desktop % cd ParametricSSM_TimeDelay 
+giacomoabbasciano@MacBook-Pro-di-Giacomo ParametricSSM_TimeDelay % ls
+Furuta	Various
+giacomoabbasciano@MacBook-Pro-di-Giacomo ParametricSSM_TimeDelay % git init
+Initialized empty Git repository in /Users/giacomoabbasciano/Desktop/ParametricSSM_TimeDelay/.git/
+giacomoabbasciano@MacBook-Pro-di-Giacomo ParametricSSM_TimeDelay % nano .gitignore
+
+
+  UW PICO 5.09                    File: .gitignore                    Modified  
+
+*.asv
+*.m~
+*.mex*
+*.fig
+slprj/
+codegen/
+*.mat
+.DS_Store
+
+
+
+
+
+
+
+
+
+
+
+
+^G Get Help  ^O WriteOut  ^R Read File ^Y Prev Pg   ^K Cut Text  ^C Cur Pos   
+^X Exit      ^J Justify   ^W Where is  ^V Next Pg   ^U UnCut Text^T To Spell  
