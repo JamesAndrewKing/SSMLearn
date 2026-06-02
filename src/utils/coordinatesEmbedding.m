@@ -30,7 +30,7 @@ function [yData, optsEmbd] = coordinatesEmbedding(xData, SSMDim, varargin)
 % Developed by Mattia Cenedese. Updated March 2021.
 
 optsEmbd = struct('IMdimensions',SSMDim,'OverEmbedding',0,...
-    'ForceEmbedding',0,'TimeStepping',1,'ShiftSteps',1);
+    'ForceEmbedding',0,'TimeStepping',1,'ShiftSteps',1,'TimestampMode','first');
 % Default case
 if nargin == 3; optsEmbd.OverEmbedding = varargin{:}; end
 if rem(length(varargin),2) > 0 && length(varargin) > 1
@@ -77,7 +77,12 @@ if n_N > 1 && optsEmbd.ForceEmbedding ~= 1
         for ii = 1:(n_N-1)
             Y_j = [Y_j; x_j(:,1+ii*shift:end-(n_N-1-ii)*shift)];
         end
-        yData{jj,1} = t_j(1:end-shift*(n_N-1));
+        % Timestamp mode selection
+        if isfield(optsEmbd,'TimestampMode') && strcmpi(optsEmbd.TimestampMode,'last')
+            yData{jj,1} = t_j(shift*(n_N-1)+1:end);
+        else
+            yData{jj,1} = t_j(1:end-shift*(n_N-1));
+        end
         yData{jj,2} = Y_j; 
     end
     
