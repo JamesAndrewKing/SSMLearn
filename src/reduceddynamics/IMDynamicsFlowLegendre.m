@@ -92,12 +92,18 @@ function [RDInfo,R,iT,N,T] = IMDynamicsFlowLegendre(etaData,varargin)
 % 'SpecifyObjectiveGradient' - default true
 %     the last five options are for Matlab function fminunc.
 %     For more information, check out its documentation.
-% 'LegendreCenter' - coordinate-wise center used before scaling, default 0
-% 'LegendreScale' - coordinate-wise scale to map data close to [-1,1],
-%                   default max(abs(X-LegendreCenter),[],2)
+% 'LegendreCenter' - coordinate-wise center used before scaling, default
+%                    midpoint of the regression samples
+% 'LegendreScale' - coordinate-wise scale used before evaluating Legendre
+%                   polynomials, default half-range of the regression
+%                   samples if LegendreCenter is also default, otherwise
+%                   max(abs(X-LegendreCenter),[],2)
 % 'regression' - 'columnScaledRidge' (default) or 'ridgeRegression'
-% 'state_degree_penalty' - degree-dependent penalty used with
-%                          columnScaledRidge, default 0
+% 'state_degree_penalty' - extra degree-dependent ridge penalty used with
+%                          columnScaledRidge. A feature of total degree d
+%                          is penalized by
+%                          (1+state_degree_penalty*max(0,d-1))^2.
+%                          Default 0 gives equal penalty to all features.
 
 if rem(length(varargin),2) > 0 && length(varargin) > 1
     error('Error on input arguments. Missing or extra arguments.')
@@ -120,18 +126,23 @@ k = size(Xi,1); L2 = (1+options.c1*exp(-options.c2*t)).^(-2);
 options = setfield(options,'L2',L2);
 
 % Construct monomial and Legendre libraries, then run ridge regression in
-% the Legendre coordinates. The Legendre library includes the constant term,
-% matching the older implementation.
+% the Legendre coordinates. The Legendre library includes the constant term
 [phi,Expmat] = multivariatePolynomial(k,1,options.R_PolyOrd);
 phi_full = @(x) [ones(1,size(x,2)); phi(x)];
 Expmat_full = [zeros(1,k); Expmat];
-if isempty(options.LegendreCenter)
-    options.LegendreCenter = zeros(k,1);
+defaultCenter = isempty(options.LegendreCenter);
+defaultScale = isempty(options.LegendreScale);
+if defaultCenter
+    options.LegendreCenter = 0.5*(max(X,[],2)+min(X,[],2));
 else
     options.LegendreCenter = options.LegendreCenter(:);
 end
-if isempty(options.LegendreScale)
-    options.LegendreScale = max(abs(X-options.LegendreCenter),[],2);
+if defaultScale
+    if defaultCenter
+        options.LegendreScale = 0.5*(max(X,[],2)-min(X,[],2));
+    else
+        options.LegendreScale = max(abs(X-options.LegendreCenter),[],2);
+    end
 else
     options.LegendreScale = options.LegendreScale(:);
 end
