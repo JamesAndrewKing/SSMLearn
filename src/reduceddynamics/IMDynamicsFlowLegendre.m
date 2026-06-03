@@ -12,21 +12,18 @@ function [RDInfo,R,iT,N,T] = IMDynamicsFlowLegendre(etaData,varargin)
 %
 % The identified vector field is stored in two equivalent representations:
 %
-%   R(x) = coefficients * phi(x)
+%   R(x) = constant + coefficients * phi(x)
 %        = legendreCoefficients * legendrePhi(x).
 %
 % The primary fields map, coefficients, phi and exponents use the monomial
 % representation. These fields are self-consistent and can be evaluated as a
-% polynomial vector field exactly as in IMDynamicsFlow. The main difference
-% is that this function includes a constant feature because the Legendre
-% library contains P_0. Consequently, coefficients(:,1), exponents(1,:) and
-% constant correspond to the constant term, and the degree-one monomial
-% coefficients start at columns 2:(k+1). Internally, the linearization used
-% for modal/normal-form processing is still extracted from the degree-one
-% columns, not from the constant column. With fixOrigin=true (default), the
-% coefficients are constrained so R(0)=0; therefore the monomial constant
-% term is zero up to numerical roundoff even though the Legendre P_0 feature
-% remains in the regression basis.
+% polynomial vector field exactly as in IMDynamicsFlow: coefficients, phi and
+% exponents contain only the nonconstant monomials of degree 1,...,M. The
+% Legendre regression internally includes P_0, so any fitted monomial
+% constant is stored separately in the field constant and added by map. With
+% fixOrigin=true (default), the coefficients are constrained so R(0)=0;
+% therefore constant is zero up to numerical roundoff and the public
+% monomial representation is compatible with IMDynamicsFlow.
 %
 % The Legendre-specific fields record how the fit was performed:
 %   legendrePhi                 scaled normalized Legendre feature map
@@ -38,7 +35,8 @@ function [RDInfo,R,iT,N,T] = IMDynamicsFlowLegendre(etaData,varargin)
 %                               monomial coefficients are prescribed via
 %                               R_coeff and only the remaining terms are fit
 %   legendreToMonomial          feature conversion matrix satisfying
-%                               legendrePhi(x)=legendreToMonomial*phi(x)
+%                               legendrePhi(x)=legendreToMonomial*
+%                               [1;phi(x)]
 %   legendreCenter/Scale        affine scaling used before evaluating
 %                               Legendre polynomials
 % Upon request, the dynamics is returned via a coordinate change, i.e.
@@ -242,15 +240,17 @@ else
 end
 W_r = W_full(:,2:end);
 W_leg = W_full / B_leg;
-R = @(x) W_full*phi_full(x);
-R_info = assembleStruct(@(x) W_full*phi_full(x),W_full,phi_full,...
-    Expmat_full,l_opt,Err);
+W_const = W_full(:,1);
+R = @(x) W_const+W_r*phi(x);
+R_info = assembleStruct(R,W_r,phi,Expmat,l_opt,Err);
 R_info.legendreMap = @(x) W_leg*legendrePhi(x);
 R_info.legendreCoefficients = W_leg;
 R_info.fittedLegendreCoefficients = W_leg_fit;
 R_info.legendrePhi = legendrePhi;
 R_info.legendreToMonomial = B_leg;
-R_info.constant = W_full(:,1);
+R_info.constant = W_const;
+R_info.monomialPhiFull = phi_full;
+R_info.monomialExponentsFull = Expmat_full;
 R_info.legendreCenter = options.LegendreCenter;
 R_info.legendreScale = options.LegendreScale;
 R_info.regression = options.regression;
@@ -272,8 +272,10 @@ switch options.style
         % Nonlinear modal dynamics coefficients
         V_M = multivariatePolynomialLinTransf(V,k,options.R_PolyOrd);
         V_M_full = sparse(blkdiag(1,V_M));
-        W_n = V\W_full*V_M_full; N = @(y) V\(W_full*phi_full(V*y));
-        N_info = assembleStruct(N,W_n,phi_full,Expmat_full);
+        W_n_full = V\W_full*V_M_full;
+        N = @(y) W_n_full(:,1)+W_n_full(:,2:end)*phi(y);
+        N_info = assembleStruct(N,W_n_full(:,2:end),phi,Expmat);
+        N_info.constant = W_n_full(:,1);
         iT_info.lintransf = inv(V); T_info.lintransf = V;
     case 'normalform'
         if options.fig_disp_nfp ~= -1
@@ -289,8 +291,10 @@ switch options.style
             % Nonlinear modal dynamics coefficients
             V_M = multivariatePolynomialLinTransf(V,k,options.R_PolyOrd);
             V_M_full = sparse(blkdiag(1,V_M));
-            W_n = V\W_full*V_M_full; N = @(y) V\(W_full*phi_full(V*y));
-            N_info = assembleStruct(N,W_n,phi_full,Expmat_full);
+            W_n_full = V\W_full*V_M_full;
+            N = @(y) W_n_full(:,1)+W_n_full(:,2:end)*phi(y);
+            N_info = assembleStruct(N,W_n_full(:,2:end),phi,Expmat);
+            N_info.constant = W_n_full(:,1);
         else
             if options.rescale == 1
                 v_rescale = max(abs(V\X),[],2);
