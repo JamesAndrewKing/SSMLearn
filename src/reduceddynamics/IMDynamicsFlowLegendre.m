@@ -9,6 +9,38 @@ function [RDInfo,R,iT,N,T] = IMDynamicsFlowLegendre(etaData,varargin)
 % The returned coefficients are also converted to the monomial basis used by
 % IMDynamicsFlow, so modal and normal-form postprocessing use the same
 % polynomial representation.
+%
+% The identified vector field is stored in two equivalent representations:
+%
+%   R(x) = coefficients * phi(x)
+%        = legendreCoefficients * legendrePhi(x).
+%
+% The primary fields map, coefficients, phi and exponents use the monomial
+% representation. These fields are self-consistent and can be evaluated as a
+% polynomial vector field exactly as in IMDynamicsFlow. The main difference
+% is that this function includes a constant feature because the Legendre
+% library contains P_0. Consequently, coefficients(:,1), exponents(1,:) and
+% constant correspond to the constant term, and the degree-one monomial
+% coefficients start at columns 2:(k+1). Internally, the linearization used
+% for modal/normal-form processing is still extracted from the degree-one
+% columns, not from the constant column. With fixOrigin=true (default), the
+% coefficients are constrained so R(0)=0; therefore the monomial constant
+% term is zero up to numerical roundoff even though the Legendre P_0 feature
+% remains in the regression basis.
+%
+% The Legendre-specific fields record how the fit was performed:
+%   legendrePhi                 scaled normalized Legendre feature map
+%   legendreCoefficients        full coefficients in the Legendre basis
+%   fittedLegendreCoefficients  coefficients directly returned by the
+%                               Legendre regression. In the default case
+%                               this equals legendreCoefficients up to
+%                               roundoff; it differs only when some
+%                               monomial coefficients are prescribed via
+%                               R_coeff and only the remaining terms are fit
+%   legendreToMonomial          feature conversion matrix satisfying
+%                               legendrePhi(x)=legendreToMonomial*phi(x)
+%   legendreCenter/Scale        affine scaling used before evaluating
+%                               Legendre polynomials
 % Upon request, the dynamics is returned via a coordinate change, i.e.
 %
 %                         R = D_T o N o iT
@@ -104,6 +136,8 @@ function [RDInfo,R,iT,N,T] = IMDynamicsFlowLegendre(etaData,varargin)
 %                          is penalized by
 %                          (1+state_degree_penalty*max(0,d-1))^2.
 %                          Default 0 gives equal penalty to all features.
+% 'fixOrigin' - enforce R(0)=0 as a linear equality constraint on the
+%               Legendre coefficients. Default true.
 
 if rem(length(varargin),2) > 0 && length(varargin) > 1
     error('Error on input arguments. Missing or extra arguments.')
@@ -150,6 +184,7 @@ options.LegendreScale(abs(options.LegendreScale)<eps) = 1;
 B_leg = scaledLegendreToMonomial(Expmat_full,options.LegendreCenter,...
     options.LegendreScale);
 legendrePhi = @(x) B_leg*phi_full(x);
+legendrePhi0 = legendrePhi(zeros(k,1));
 penalty = featurePenalty(Expmat_full,options.state_degree_penalty);
 if isempty(options.R_coeff) == 1
     if options.fig_disp_nfp ~= -1
@@ -157,10 +192,15 @@ if isempty(options.R_coeff) == 1
     end
     if strcmp(options.regression,'columnScaledRidge')
         [W_leg_fit,l_opt,Err] = columnScaledRidge(legendrePhi(X),dXdt,...
-            options.L2,options.idx_folds,options.l_vals,penalty);
+            options.L2,options.idx_folds,options.l_vals,penalty,...
+            options.fixOrigin,legendrePhi0,zeros(k,1));
     else
         [W_leg_fit,l_opt,Err] = ridgeRegression(legendrePhi(X),dXdt,...
             options.L2,options.idx_folds,options.l_vals);
+        if options.fixOrigin
+            W_leg_fit = enforceLinearConstraint(W_leg_fit,legendrePhi0,...
+                zeros(k,1),ones(size(legendrePhi0)));
+        end
     end
     W_full = W_leg_fit*B_leg;
 else
@@ -171,18 +211,28 @@ else
         W_leg_fit = W_full / B_leg;
     else
         Xmon = phi_full(X);
-        B_leg_unknown = B_leg(:,[1 nCoefs+2:end]);
+        xmon0 = phi_full(zeros(k,1));
+        unknownCols = [1 nCoefs+2:size(Xmon,1)];
+        knownCols = 2:nCoefs+1;
+        B_leg_unknown = B_leg(:,unknownCols);
         activeLegendreRows = find(any(abs(B_leg_unknown)>eps,2));
         B_leg_unknown_active = B_leg_unknown(activeLegendreRows,:);
-        Xreg = B_leg_unknown_active*Xmon([1 nCoefs+2:end],:);
-        Yreg = dXdt-W_r_known*Xmon(2:nCoefs+1,:);
+        Xreg = B_leg_unknown_active*Xmon(unknownCols,:);
+        Yreg = dXdt-W_r_known*Xmon(knownCols,:);
+        constraintPhi0 = B_leg_unknown_active*xmon0(unknownCols);
+        constraintTarget = -W_r_known*xmon0(knownCols);
         if strcmp(options.regression,'columnScaledRidge')
             [W_leg_fit_active,l_opt,Err] = columnScaledRidge(Xreg,Yreg,...
                 options.L2,options.idx_folds,options.l_vals,...
-                penalty(activeLegendreRows));
+                penalty(activeLegendreRows),options.fixOrigin,...
+                constraintPhi0,constraintTarget);
         else
             [W_leg_fit_active,l_opt,Err] = ridgeRegression(Xreg,Yreg,...
                 options.L2,options.idx_folds,options.l_vals);
+            if options.fixOrigin
+                W_leg_fit_active = enforceLinearConstraint(W_leg_fit_active,...
+                    constraintPhi0,constraintTarget);
+            end
         end
         W_unknown = W_leg_fit_active*B_leg_unknown_active;
         W_full = [W_unknown(:,1) W_r_known W_unknown(:,2:end)];
@@ -205,6 +255,7 @@ R_info.legendreCenter = options.LegendreCenter;
 R_info.legendreScale = options.LegendreScale;
 R_info.regression = options.regression;
 R_info.stateDegreePenalty = options.state_degree_penalty;
+R_info.fixOrigin = options.fixOrigin;
 options.l = l_opt;
 if options.fig_disp_nfp ~= -1
     fprintf('\b Done. \n')
@@ -547,8 +598,12 @@ p(1:numel(a)) = p(1:numel(a))+a;
 p(1:numel(b)) = p(1:numel(b))+b;
 end
 
-function [W,l_opt,Err] = columnScaledRidge(Phi,Y,L,idx_folds,l_vals,penalty)
+function [W,l_opt,Err] = columnScaledRidge(Phi,Y,L,idx_folds,l_vals,penalty,...
+    fixConstraint,constraintPhi,targetValue)
 % Same feature-by-sample orientation as ridgeRegression.
+if nargin < 7
+    fixConstraint = false;
+end
 X = Phi.';
 Y = Y.';
 L = L(:);
@@ -557,6 +612,13 @@ scale = max(abs(X),[],1).';
 scale(abs(scale)<1e-12) = 1;
 Xs = X ./ scale.';
 XL = L .* Xs;
+if fixConstraint
+    constraintScaled = constraintPhi(:)./scale;
+    targetValue = targetValue(:).';
+else
+    constraintScaled = [];
+    targetValue = [];
+end
 
 if isempty(idx_folds)
     l_opt = l_vals(1);
@@ -570,7 +632,10 @@ else
             test = idx_folds{ifold};
             train = all_idx;
             train(test) = [];
-            B = (XL(train,:)'*Xs(train,:) + reg) \ (XL(train,:)'*Y(train,:));
+            A = XL(train,:)'*Xs(train,:) + reg;
+            rhs = XL(train,:)'*Y(train,:);
+            B = solveConstrainedRidge(A,rhs,fixConstraint,...
+                constraintScaled,targetValue);
             E = Y(test,:) - Xs(test,:)*B;
             Err(il,ifold) = mean(sqrt(sum(abs(E).^2,2)));
         end
@@ -580,8 +645,38 @@ else
 end
 
 reg = diag(l_opt*penalty(:));
-B = (XL'*Xs + reg) \ (XL'*Y);
+A = XL'*Xs + reg;
+rhs = XL'*Y;
+B = solveConstrainedRidge(A,rhs,fixConstraint,constraintScaled,targetValue);
 W = (B ./ scale).';
+end
+
+function B = solveConstrainedRidge(A,rhs,fixConstraint,constraintScaled,...
+    targetValue)
+B = A\rhs;
+if fixConstraint == 0
+    return
+end
+if norm(constraintScaled) < eps
+    return
+end
+AinvConstraint = A\constraintScaled;
+denominator = constraintScaled'*AinvConstraint;
+if abs(denominator) < eps
+    return
+end
+constraintResidual = constraintScaled'*B - targetValue;
+B = B - AinvConstraint*(constraintResidual/denominator);
+end
+
+function W = enforceLinearConstraint(W,constraintPhi,targetValue)
+constraintPhi = constraintPhi(:);
+targetValue = targetValue(:);
+denominator = constraintPhi'*constraintPhi;
+if denominator < eps
+    return
+end
+W = W - ((W*constraintPhi-targetValue)/denominator)*constraintPhi.';
 end
 
 function penalty = featurePenalty(Expmat,state_weight)
@@ -602,6 +697,7 @@ options = struct('Style','default','R_PolyOrd', 1,'iT_PolyOrd',1,...
     'fig_disp_nfp',0,'Display','iter',...
     'LegendreCenter',[],'LegendreScale',[],...
     'regression','columnScaledRidge','state_degree_penalty',0,...
+    'fixOrigin',true,...
     'OptimalityTolerance',10^(-8-floor(log10(Ndata))),...
     'MaxIter',1e3,...
     'MaxFunctionEvaluations',1e4,...
