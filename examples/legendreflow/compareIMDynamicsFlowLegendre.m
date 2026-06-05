@@ -85,7 +85,7 @@ end
 Xtrain = [];
 for iTraj = 1:size(etaData,1)
     [~,Xi] = finiteTimeDifference(etaData{iTraj,2},etaData{iTraj,1},3);
-    Xtrain = [Xtrain Xi]; %#ok<AGROW>
+    Xtrain = [Xtrain Xi];
 end
 
 %% Validation cloud for vector-field error

@@ -541,8 +541,8 @@ for iBasis = 1:nBasis
                 if abs(p(iDeg+1)) > eps
                     expNew = termExp(iTerm,:);
                     expNew(iVar) = expNew(iVar)+iDeg;
-                    nextExp = [nextExp; expNew]; %#ok<AGROW>
-                    nextCoeff = [nextCoeff; termCoeff(iTerm)*p(iDeg+1)]; %#ok<AGROW>
+                    nextExp = [nextExp; expNew];
+                    nextCoeff = [nextCoeff; termCoeff(iTerm)*p(iDeg+1)];
                 end
             end
         end
