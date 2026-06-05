@@ -132,8 +132,8 @@ function [RDInfo,R,iT,N,T] = IMDynamicsFlowLegendre(etaData,varargin)
 % 'state_degree_penalty' - extra degree-dependent ridge penalty used with
 %                          columnScaledRidge. A feature of total degree d
 %                          is penalized by
-%                          (1+state_degree_penalty*max(0,d-1))^2.
-%                          Default 0 gives equal penalty to all features.
+%                          (1+d)^(2*state_degree_penalty). Default 0 gives
+%                          equal penalty to all features.
 % 'fixOrigin' - enforce R(0)=0 as a linear equality constraint on the
 %               Legendre coefficients. Default true.
 
@@ -685,7 +685,7 @@ end
 
 function penalty = featurePenalty(Expmat,state_weight)
 degree = sum(Expmat,2);
-penalty = (1 + state_weight*max(0,degree-1)).^2;
+penalty = (1 + degree).^(2*state_weight);
 end
 
 %- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -

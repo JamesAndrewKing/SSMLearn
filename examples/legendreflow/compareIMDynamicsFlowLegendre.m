@@ -24,9 +24,9 @@ nValidation = 5000;
 
 l_vals_flow = [0 logspace(-12,-3,16)];
 l_vals_legendre = logspace(-8,-2,13);
-% Extra ridge penalty on higher polynomial degrees in IMDynamicsFlowLegendre.
+% Power p in the Legendre smoothness penalty (1+|alpha|)^(2p).
 % Set to 0 to penalize all Legendre features equally.
-stateDegreePenalty = 0.2;
+stateDegreePenalty = 1.5;
 
 %% Analytic RHS
 omega = 0.75 + 0.18*(1:stateDim/2) + 0.12*sin(1:stateDim/2);
