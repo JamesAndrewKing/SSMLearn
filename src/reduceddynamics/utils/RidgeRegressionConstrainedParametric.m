@@ -31,7 +31,7 @@ if l>0
     end
     if options.origin_fixed == 0
         % Only skip the constant term so that R(0,0) = 0
-        Expmat = [zeros(size(ExpmatParam,1)-1,k) ExpmatParam(2:end,1); Expmat];
+        Expmat = [zeros(size(ExpmatParam,1)-1,k) ExpmatParam(2:end,:); Expmat];
     end
 else
     Expmat = ExpmatState;
